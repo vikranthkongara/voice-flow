@@ -1,0 +1,26 @@
+package.VoiceFlow = {
+    interfaces = (1.0);
+    build-system = brazil-python;
+
+    build-tools = {
+        1.0 = {
+            BrazilPython = 3.x;
+        };
+    };
+
+    dependencies = {
+        1.0 = {
+        };
+    };
+
+    targets = {
+        VoiceFlow-1.0 = { type = python; };
+    };
+
+    # Toolbox bundling metadata
+    toolbox-tool = {
+        name = voice-flow;
+        description = "System-wide voice-to-text tool. Hold Option to dictate, release to paste cleaned text via Bedrock.";
+        platforms = (macos_arm64, macos_x86_64);
+    };
+};

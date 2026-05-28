@@ -1,0 +1,35 @@
+# Pipelines config for voice-flow
+# Builds for both macOS platforms, publishes to Toolbox S3 repo
+
+name: VoiceFlow
+description: Voice-to-text tool distributed via Builder Toolbox
+
+stages:
+  - name: Build
+    actions:
+      - name: BuildMacArm64
+        type: build
+        platform: macos_arm64
+        commands:
+          - make bundle PLATFORM=macos_arm64
+
+      - name: BuildMacIntel
+        type: build
+        platform: macos_x86_64
+        commands:
+          - make bundle PLATFORM=macos_x86_64
+
+  - name: Test
+    actions:
+      - name: UnitTests
+        type: test
+        commands:
+          - python3 -m pytest tests/ -v
+
+  - name: Publish
+    actions:
+      - name: PublishStable
+        type: deploy
+        commands:
+          - make publish PLATFORM=macos_arm64
+          - make publish PLATFORM=macos_x86_64

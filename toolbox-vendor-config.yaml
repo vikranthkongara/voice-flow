@@ -1,0 +1,23 @@
+# Builder Toolbox Vendor Infrastructure Config
+# This defines the S3 bucket and IAM resources for publishing voice-flow
+
+tool_name: voice-flow
+team_name: VoiceFlow
+team_email: vkongar@amazon.com
+
+repository:
+  bucket_prefix: buildertoolbox-voice-flow
+  region: us-west-2
+
+platforms:
+  - macos_arm64
+  - macos_x86_64
+
+channels:
+  - stable
+  - head
+
+post_install:
+  message: |
+    Voice Flow installed! Run 'voice-flow-setup' for first-time permissions setup.
+    Then use 'voice-flow' to start dictating.
