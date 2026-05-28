@@ -1,24 +1,29 @@
-"""Voice-to-text tool for macOS. Hold Option key to record, release to transcribe and paste."""
+"""Voice Flow: Cross-platform voice-to-text tool (macOS, Windows, Linux).
+Hold a hotkey to record, release to transcribe and paste cleaned text via Bedrock."""
 
 import os
+import sys
+import platform
 import tempfile
 import threading
 import subprocess
+import json
 import numpy as np
 import sounddevice as sd
 import whisper
 import boto3
-import json
 from pynput import keyboard
 
 
 SAMPLE_RATE = 16000
-MODEL_SIZE = "base"  # Options: tiny, base, small, medium, large
-BEDROCK_MODEL = "anthropic.claude-sonnet-4-6-v1:0"
-BEDROCK_REGION = "us-west-2"
+MODEL_SIZE = os.environ.get("VOICE_FLOW_WHISPER_MODEL", "base")
+BEDROCK_MODEL = os.environ.get("VOICE_FLOW_BEDROCK_MODEL", "anthropic.claude-sonnet-4-6-v1:0")
+BEDROCK_REGION = os.environ.get("VOICE_FLOW_BEDROCK_REGION", "us-west-2")
+HOTKEY = keyboard.Key.alt_r  # Right Alt/Option on all platforms
+
+PLATFORM = platform.system()  # Darwin, Windows, Linux
 
 whisper_model = None
-recording = False
 audio_frames = []
 
 
@@ -26,31 +31,11 @@ def load_whisper():
     global whisper_model
     print("Loading Whisper model...")
     whisper_model = whisper.load_model(MODEL_SIZE)
-    print(f"Whisper '{MODEL_SIZE}' loaded.")
-
-
-def start_recording():
-    global recording, audio_frames
-    audio_frames = []
-    recording = True
-    print("🎙️  Recording...")
-
-    def callback(indata, frames, time, status):
-        if recording:
-            audio_frames.append(indata.copy())
-
-    sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        callback=callback,
-    ).start()
+    print(f"Whisper '{MODEL_SIZE}' loaded on {PLATFORM}.")
 
 
 def stop_recording():
-    global recording
-    recording = False
-    print("⏹️  Processing...")
+    print("Processing...")
 
     if not audio_frames:
         print("No audio captured.")
@@ -74,7 +59,9 @@ def stop_recording():
         print(f"Raw: {raw_text}")
         cleaned = clean_with_claude(raw_text)
         print(f"Clean: {cleaned}")
-        paste_text(cleaned)
+        copy_to_clipboard(cleaned)
+        paste_from_clipboard()
+        print("Pasted!")
     finally:
         os.unlink(temp_path)
 
@@ -106,24 +93,59 @@ def clean_with_claude(text: str) -> str:
     return result["content"][0]["text"].strip()
 
 
-def paste_text(text: str):
-    process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-    process.communicate(text.encode("utf-8"))
-    subprocess.run(
-        ["osascript", "-e", 'tell application "System Events" to keystroke "v" using command down'],
-    )
-    print("✅ Pasted!")
+def copy_to_clipboard(text: str):
+    if PLATFORM == "Darwin":
+        process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        process.communicate(text.encode("utf-8"))
+    elif PLATFORM == "Windows":
+        process = subprocess.Popen(["clip.exe"], stdin=subprocess.PIPE)
+        process.communicate(text.encode("utf-16le"))
+    else:
+        # Linux: try xclip, then xsel, then wl-copy (Wayland)
+        for cmd in [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"], ["wl-copy"]]:
+            try:
+                process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                process.communicate(text.encode("utf-8"))
+                return
+            except FileNotFoundError:
+                continue
+        print("WARNING: No clipboard tool found. Install xclip, xsel, or wl-copy.")
+
+
+def paste_from_clipboard():
+    if PLATFORM == "Darwin":
+        subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to keystroke "v" using command down'],
+        )
+    elif PLATFORM == "Windows":
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_V, 0, 0, 0)
+        user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+    else:
+        # Linux: xdotool for X11, ydotool for Wayland
+        session_type = os.environ.get("XDG_SESSION_TYPE", "x11")
+        if session_type == "wayland":
+            subprocess.run(["ydotool", "key", "29:1", "47:1", "47:0", "29:0"], capture_output=True)
+        else:
+            subprocess.run(["xdotool", "key", "ctrl+v"], capture_output=True)
 
 
 class HotkeyListener:
     def __init__(self):
-        self.option_pressed = False
+        self.hotkey_pressed = False
         self.stream = None
 
     def on_press(self, key):
-        if key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
-            if not self.option_pressed:
-                self.option_pressed = True
+        if key == HOTKEY:
+            if not self.hotkey_pressed:
+                self.hotkey_pressed = True
                 self.stream = sd.InputStream(
                     samplerate=SAMPLE_RATE,
                     channels=1,
@@ -132,12 +154,12 @@ class HotkeyListener:
                 )
                 audio_frames.clear()
                 self.stream.start()
-                print("🎙️  Recording...")
+                print("Recording...")
 
     def on_release(self, key):
-        if key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
-            if self.option_pressed:
-                self.option_pressed = False
+        if key == HOTKEY:
+            if self.hotkey_pressed:
+                self.hotkey_pressed = False
                 if self.stream:
                     self.stream.stop()
                     self.stream.close()
@@ -148,10 +170,45 @@ class HotkeyListener:
         audio_frames.append(indata.copy())
 
 
+def check_platform_deps():
+    issues = []
+
+    if PLATFORM == "Linux":
+        has_clipboard = False
+        for cmd in ["xclip", "xsel", "wl-copy"]:
+            if subprocess.run(["which", cmd], capture_output=True).returncode == 0:
+                has_clipboard = True
+                break
+        if not has_clipboard:
+            issues.append("No clipboard tool found. Install: sudo apt install xclip")
+
+        session_type = os.environ.get("XDG_SESSION_TYPE", "x11")
+        paste_tool = "ydotool" if session_type == "wayland" else "xdotool"
+        if subprocess.run(["which", paste_tool], capture_output=True).returncode != 0:
+            issues.append(f"No paste tool found. Install: sudo apt install {paste_tool}")
+
+    if issues:
+        print("Missing dependencies:")
+        for issue in issues:
+            print(f"  - {issue}")
+        print()
+
+    return len(issues) == 0
+
+
+def get_hotkey_name():
+    if PLATFORM == "Darwin":
+        return "Right Option"
+    return "Right Alt"
+
+
 def main():
+    check_platform_deps()
     load_whisper()
-    print("\n✅ Voice Flow ready!")
-    print("Hold Option (⌥) to record, release to transcribe and paste.")
+
+    hotkey_name = get_hotkey_name()
+    print(f"\nVoice Flow ready! ({PLATFORM})")
+    print(f"Hold {hotkey_name} to record, release to transcribe and paste.")
     print("Press Ctrl+C to quit.\n")
 
     listener = HotkeyListener()
