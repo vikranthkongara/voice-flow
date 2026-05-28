@@ -1,0 +1,22 @@
+# Python
+.venv/
+.venv-bundle/
+__pycache__/
+*.pyc
+dist/
+build/
+
+# SAM build artifacts
+.aws-sam/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bundler output
+build/
